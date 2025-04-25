@@ -165,6 +165,7 @@ export const useLocationTracking = (initialUserIds: string[] = []) => {
   }, [user?.id, subscribeToUserLocation]);
   
   const startTracking = async () => {
+    // Don't start tracking if user is not available or already tracking
     if (!user?.id || locationWatcherRef.current) return;
     
     console.log('Starting location tracking...');
@@ -185,16 +186,23 @@ export const useLocationTracking = (initialUserIds: string[] = []) => {
         if (locationResult.error.denied) {
           setPermissionGranted(false);
         }
+        // Ensure isTracking is false on error
+        setIsTracking(false);
         return;
       }
       
       if (locationResult) {
         console.log('Location tracking started successfully');
         locationWatcherRef.current = locationResult;
-        setIsTracking(true);
+        // Only update isTracking if it's not already true to avoid re-renders
+        if (!isTracking) {
+          setIsTracking(true);
+        }
       }
     } catch (error) {
       console.error('Unexpected error starting location tracking:', error);
+      // Ensure isTracking is false on error
+      setIsTracking(false);
     }
   };
   
