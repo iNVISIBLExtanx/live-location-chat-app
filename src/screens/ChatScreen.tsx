@@ -19,6 +19,7 @@ import {
   getConversationHistory,
   markMessageAsRead,
   setupChatPresence,
+  subscribeToConversation,
 } from '../services/ChatService';
 import { Message } from '../types';
 import { RouteProp, useRoute, useNavigation } from '@react-navigation/native';
@@ -48,6 +49,7 @@ const ChatScreen: React.FC = () => {
   const flatListRef = useRef<FlatList>(null);
   const presenceRef = useRef<any>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const unsubscribeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -109,6 +111,34 @@ const ChatScreen: React.FC = () => {
           }
         }
       });
+      
+      // Subscribe to database changes for real-time messages
+      // This is critical for ensuring messages appear instantly for both sender and receiver
+      unsubscribeRef.current = subscribeToConversation(user.id, receiverId, (newMessage) => {
+        console.log('Real-time message received from database subscription:', newMessage);
+        // Check if message already exists in our list to avoid duplicates
+        setMessages((prevMessages) => {
+          // Check if we already have this message
+          const messageExists = prevMessages.some(msg => 
+            msg.id === newMessage.id || 
+            (msg.sender_id === newMessage.sender_id && 
+             msg.created_at === newMessage.created_at && 
+             msg.content === newMessage.content)
+          );
+          
+          if (messageExists) {
+            return prevMessages;
+          }
+          
+          // If it's a new message, add it to the list
+          return [newMessage, ...prevMessages];
+        });
+        
+        // Mark message as read if received
+        if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id) {
+          markMessageAsRead(newMessage.id!);
+        }
+      });
     }
     
     return () => {
@@ -120,6 +150,11 @@ const ChatScreen: React.FC = () => {
       // Clear typing timeout
       if (typingTimeoutRef.current) {
         clearTimeout(typingTimeoutRef.current);
+      }
+      
+      // Unsubscribe from conversation updates
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
       }
     };
   }, [user?.id, receiverId]);
