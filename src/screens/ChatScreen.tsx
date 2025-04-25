@@ -102,8 +102,25 @@ const ChatScreen: React.FC = () => {
           setIsOtherUserOnline(isOnline);
         },
         onNewMessage: (newMessage) => {
-          // Add new message to the list
-          setMessages((prevMessages) => [newMessage, ...prevMessages]);
+          console.log('Broadcast message received via onNewMessage callback:', newMessage);
+          // Add new message to the list if it doesn't exist
+          setMessages((prevMessages) => {
+            // Check if we already have this message to avoid duplicates
+            const messageExists = prevMessages.some(msg => 
+              (msg.id && msg.id === newMessage.id) || 
+              (msg.sender_id === newMessage.sender_id && 
+               msg.created_at === newMessage.created_at && 
+               msg.content === newMessage.content)
+            );
+            
+            if (messageExists) {
+              console.log('Message already exists in state, not adding again');
+              return prevMessages;
+            }
+            
+            console.log('Adding new broadcast message to UI state');
+            return [newMessage, ...prevMessages];
+          });
           
           // Mark message as read if received
           if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id) {
