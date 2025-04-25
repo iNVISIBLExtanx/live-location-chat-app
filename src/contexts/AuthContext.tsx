@@ -113,6 +113,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signUp = async (email: string, password: string, userData?: Partial<User>) => {
+    console.log('SignUp called with userData:', userData);
+    
     // First sign up the user with Supabase Auth
     const { error, data } = await supabase.auth.signUp({
       email,
@@ -121,37 +123,90 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     // If signup is successful, create the user profile
     if (!error && data.user) {
-      // Get any existing session to ensure RLS policies work correctly
-      await supabase.auth.getSession();
+      console.log('Auth signup successful, user ID:', data.user.id);
+      console.log('Creating profile with role:', userData?.role);
       
-      // Prepare user data with required fields
-      const newUser = {
-        id: data.user.id,
-        email,
-        full_name: userData?.full_name || email.split('@')[0],
-        role: userData?.role || 'passenger',
-        avatar_url: userData?.avatar_url || null,
-        created_at: new Date().toISOString(),
-      };
-      
-      // Insert the user profile
-      const { error: profileError } = await supabase
-        .from('users')
-        .upsert(newUser, { onConflict: 'id' });
-      
-      if (profileError) {
-        console.error('Error creating user profile during signup:', profileError);
-        // Note: We're not returning this error to avoid confusing the user
-        // The auth account is created, but profile creation failed
-      } else {
-        console.log('User profile created successfully');
-        setUser(newUser as User);
+      try {
+        // Wait for the session to be established
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Explicitly save the role - this is the value we need to ensure is used
+        const userRole = userData?.role || 'passenger';
+        console.log('Using role for new user:', userRole);
+        
+        // Get any existing session to ensure RLS policies work correctly
+        const { data: sessionData } = await supabase.auth.getSession();
+        
+        if (!sessionData.session) {
+          console.log('No valid session available for profile creation');
+        }
+        
+        // We need to ensure the user exists first before we can update the role
+        const { data: checkUser } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', data.user.id)
+          .maybeSingle();
+          
+        if (!checkUser) {
+          // Try to create a basic user record first
+          console.log('User record does not exist yet, creating basic record...');
+          const { error: insertError } = await supabase
+            .from('users')
+            .insert({
+              id: data.user.id,
+              email: email,
+              full_name: userData?.full_name || email.split('@')[0],
+              created_at: new Date().toISOString()
+            });
+            
+          if (insertError) {
+            console.log('Error creating basic user record:', insertError);
+          } else {
+            console.log('Basic user record created successfully');
+          }
+        } else {
+          console.log('User record already exists');
+        }
+        
+        // Now use the admin function to update the role directly
+        console.log('Using admin function to update role to:', userRole);
+        const { error: rpcError } = await supabase.rpc(
+          'admin_update_user_role',
+          { 
+            user_id: data.user.id,
+            new_role: userRole
+          }
+        );
+        
+        if (rpcError) {
+          console.error('Error updating role via admin function:', rpcError);
+        } else {
+          console.log('Role updated successfully via admin function');
+        }
+        
+        // Verify the role was set correctly
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+          
+        if (verifyError) {
+          console.error('Error verifying user data:', verifyError);
+        } else {
+          console.log('Verified user data:', verifyData);
+          console.log('VERIFIED ROLE IN DATABASE:', verifyData.role);
+          setUser(verifyData as User);
+        }
+      } catch (error) {
+        console.error('Exception during profile creation:', error);
       }
     }
     
     return { error };
   };
-
+  
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({
       email,

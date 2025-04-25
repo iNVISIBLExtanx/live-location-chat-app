@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -18,6 +18,11 @@ import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { UserRole } from '../types';
 
+// Existing debug function remains the same
+const debugSignupProcess = async (email: string, password: string, fullName: string, selectedRole: UserRole) => {
+  // ... keep existing implementation
+};
+
 type AuthStackParamList = {
   Login: undefined;
   Signup: undefined;
@@ -35,6 +40,25 @@ const SignupScreen: React.FC = () => {
   const [fullName, setFullName] = useState('');
   const [role, setRole] = useState<UserRole>('passenger');
   const [loading, setLoading] = useState(false);
+  
+  // Add these new state variables for rate limiting
+  const [rateLimited, setRateLimited] = useState(false);
+  const [timeRemaining, setTimeRemaining] = useState(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Add this effect to log role changes
+  useEffect(() => {
+    console.log('Current selected role:', role);
+  }, [role]);
+  
+  // Add this effect to clean up timer
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
 
   const handleSignup = async () => {
     if (!email.trim() || !password.trim() || !fullName.trim()) {
@@ -46,19 +70,59 @@ const SignupScreen: React.FC = () => {
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
     }
+    
+    // Check if rate limited
+    if (rateLimited) {
+      Alert.alert('Rate Limited', `Please try again in ${timeRemaining} seconds.`);
+      return;
+    }
+    
+    console.log('About to call signUp with role:', role);
+    
+    // Debug process - keep this
+    await debugSignupProcess(email, password, fullName, role);
 
     setLoading(true);
     try {
       // Pass user data directly to the signUp method
       const userData = {
         full_name: fullName,
-        role,
+        role, // Make sure role is being passed correctly
       };
+      
+      console.log('Sending user data to signup:', userData);
       
       const { error } = await signUp(email, password, userData);
       
       if (error) {
-        Alert.alert('Signup Failed', error.message);
+        // Check for rate limiting error
+        if (error.message && error.message.includes('For security purposes')) {
+          const waitTimeMatch = error.message.match(/after (\d+) seconds/);
+          const waitTime = waitTimeMatch ? parseInt(waitTimeMatch[1]) : 60;
+          
+          setRateLimited(true);
+          setTimeRemaining(waitTime);
+          
+          // Start a countdown timer
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+          }
+          
+          timerRef.current = setInterval(() => {
+            setTimeRemaining(prev => {
+              if (prev <= 1) {
+                setRateLimited(false);
+                if (timerRef.current) clearInterval(timerRef.current);
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+          
+          Alert.alert('Rate Limited', `Please try again in ${waitTime} seconds.`);
+        } else {
+          Alert.alert('Signup Failed', error.message);
+        }
       } else {
         Alert.alert(
           'Signup Successful', 
@@ -116,7 +180,10 @@ const SignupScreen: React.FC = () => {
                 styles.roleButton,
                 role === 'passenger' && styles.selectedRoleButton,
               ]}
-              onPress={() => setRole('passenger')}
+              onPress={() => {
+                console.log('Setting role to passenger');
+                setRole('passenger');
+              }}
             >
               <Text
                 style={[
@@ -132,7 +199,10 @@ const SignupScreen: React.FC = () => {
                 styles.roleButton,
                 role === 'driver' && styles.selectedRoleButton,
               ]}
-              onPress={() => setRole('driver')}
+              onPress={() => {
+                console.log('Setting role to driver');
+                setRole('driver');
+              }}
             >
               <Text
                 style={[
@@ -146,12 +216,17 @@ const SignupScreen: React.FC = () => {
           </View>
 
           <TouchableOpacity
-            style={styles.signupButton}
+            style={[
+              styles.signupButton,
+              (loading || rateLimited) && styles.disabledButton
+            ]}
             onPress={handleSignup}
-            disabled={loading}
+            disabled={loading || rateLimited}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
+            ) : rateLimited ? (
+              <Text style={styles.buttonText}>Try again in {timeRemaining}s</Text>
             ) : (
               <Text style={styles.buttonText}>Sign Up</Text>
             )}
@@ -231,6 +306,9 @@ const styles = StyleSheet.create({
     padding: 15,
     alignItems: 'center',
     marginTop: 10,
+  },
+  disabledButton: {
+    backgroundColor: '#A4C2F4', // Lighter shade for disabled state
   },
   buttonText: {
     color: '#fff',

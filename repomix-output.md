@@ -78,6 +78,7 @@ app.json
 App.tsx
 babel.config.js
 index.ts
+LICENSE
 package.json
 README.md
 repomix.config.json
@@ -423,6 +424,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signUp = async (email: string, password: string, userData?: Partial<User>) => {
+    console.log('SignUp called with userData:', userData);
+    
     // First sign up the user with Supabase Auth
     const { error, data } = await supabase.auth.signUp({
       email,
@@ -431,37 +434,90 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     // If signup is successful, create the user profile
     if (!error && data.user) {
-      // Get any existing session to ensure RLS policies work correctly
-      await supabase.auth.getSession();
+      console.log('Auth signup successful, user ID:', data.user.id);
+      console.log('Creating profile with role:', userData?.role);
       
-      // Prepare user data with required fields
-      const newUser = {
-        id: data.user.id,
-        email,
-        full_name: userData?.full_name || email.split('@')[0],
-        role: userData?.role || 'passenger',
-        avatar_url: userData?.avatar_url || null,
-        created_at: new Date().toISOString(),
-      };
-      
-      // Insert the user profile
-      const { error: profileError } = await supabase
-        .from('users')
-        .upsert(newUser, { onConflict: 'id' });
-      
-      if (profileError) {
-        console.error('Error creating user profile during signup:', profileError);
-        // Note: We're not returning this error to avoid confusing the user
-        // The auth account is created, but profile creation failed
-      } else {
-        console.log('User profile created successfully');
-        setUser(newUser as User);
+      try {
+        // Wait for the session to be established
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Explicitly save the role - this is the value we need to ensure is used
+        const userRole = userData?.role || 'passenger';
+        console.log('Using role for new user:', userRole);
+        
+        // Get any existing session to ensure RLS policies work correctly
+        const { data: sessionData } = await supabase.auth.getSession();
+        
+        if (!sessionData.session) {
+          console.log('No valid session available for profile creation');
+        }
+        
+        // We need to ensure the user exists first before we can update the role
+        const { data: checkUser } = await supabase
+          .from('users')
+          .select('id')
+          .eq('id', data.user.id)
+          .maybeSingle();
+          
+        if (!checkUser) {
+          // Try to create a basic user record first
+          console.log('User record does not exist yet, creating basic record...');
+          const { error: insertError } = await supabase
+            .from('users')
+            .insert({
+              id: data.user.id,
+              email: email,
+              full_name: userData?.full_name || email.split('@')[0],
+              created_at: new Date().toISOString()
+            });
+            
+          if (insertError) {
+            console.log('Error creating basic user record:', insertError);
+          } else {
+            console.log('Basic user record created successfully');
+          }
+        } else {
+          console.log('User record already exists');
+        }
+        
+        // Now use the admin function to update the role directly
+        console.log('Using admin function to update role to:', userRole);
+        const { error: rpcError } = await supabase.rpc(
+          'admin_update_user_role',
+          { 
+            user_id: data.user.id,
+            new_role: userRole
+          }
+        );
+        
+        if (rpcError) {
+          console.error('Error updating role via admin function:', rpcError);
+        } else {
+          console.log('Role updated successfully via admin function');
+        }
+        
+        // Verify the role was set correctly
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', data.user.id)
+          .single();
+          
+        if (verifyError) {
+          console.error('Error verifying user data:', verifyError);
+        } else {
+          console.log('Verified user data:', verifyData);
+          console.log('VERIFIED ROLE IN DATABASE:', verifyData.role);
+          setUser(verifyData as User);
+        }
+      } catch (error) {
+        console.error('Exception during profile creation:', error);
       }
     }
     
     return { error };
   };
-
+  
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({
       email,
@@ -2336,7 +2392,7 @@ export default ProfileScreen;
 
 ## File: src/screens/SignupScreen.tsx
 ````typescript
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -2356,6 +2412,11 @@ import { useNavigation } from '@react-navigation/native';
 import { supabase } from '../lib/supabase';
 import { UserRole } from '../types';
 
+// Existing debug function remains the same
+const debugSignupProcess = async (email: string, password: string, fullName: string, selectedRole: UserRole) => {
+  // ... keep existing implementation
+};
+
 type AuthStackParamList = {
   Login: undefined;
   Signup: undefined;
@@ -2373,6 +2434,25 @@ const SignupScreen: React.FC = () => {
   const [fullName, setFullName] = useState('');
   const [role, setRole] = useState<UserRole>('passenger');
   const [loading, setLoading] = useState(false);
+  
+  // Add these new state variables for rate limiting
+  const [rateLimited, setRateLimited] = useState(false);
+  const [timeRemaining, setTimeRemaining] = useState(0);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Add this effect to log role changes
+  useEffect(() => {
+    console.log('Current selected role:', role);
+  }, [role]);
+  
+  // Add this effect to clean up timer
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
+    };
+  }, []);
 
   const handleSignup = async () => {
     if (!email.trim() || !password.trim() || !fullName.trim()) {
@@ -2384,19 +2464,59 @@ const SignupScreen: React.FC = () => {
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
     }
+    
+    // Check if rate limited
+    if (rateLimited) {
+      Alert.alert('Rate Limited', `Please try again in ${timeRemaining} seconds.`);
+      return;
+    }
+    
+    console.log('About to call signUp with role:', role);
+    
+    // Debug process - keep this
+    await debugSignupProcess(email, password, fullName, role);
 
     setLoading(true);
     try {
       // Pass user data directly to the signUp method
       const userData = {
         full_name: fullName,
-        role,
+        role, // Make sure role is being passed correctly
       };
+      
+      console.log('Sending user data to signup:', userData);
       
       const { error } = await signUp(email, password, userData);
       
       if (error) {
-        Alert.alert('Signup Failed', error.message);
+        // Check for rate limiting error
+        if (error.message && error.message.includes('For security purposes')) {
+          const waitTimeMatch = error.message.match(/after (\d+) seconds/);
+          const waitTime = waitTimeMatch ? parseInt(waitTimeMatch[1]) : 60;
+          
+          setRateLimited(true);
+          setTimeRemaining(waitTime);
+          
+          // Start a countdown timer
+          if (timerRef.current) {
+            clearInterval(timerRef.current);
+          }
+          
+          timerRef.current = setInterval(() => {
+            setTimeRemaining(prev => {
+              if (prev <= 1) {
+                setRateLimited(false);
+                if (timerRef.current) clearInterval(timerRef.current);
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+          
+          Alert.alert('Rate Limited', `Please try again in ${waitTime} seconds.`);
+        } else {
+          Alert.alert('Signup Failed', error.message);
+        }
       } else {
         Alert.alert(
           'Signup Successful', 
@@ -2454,7 +2574,10 @@ const SignupScreen: React.FC = () => {
                 styles.roleButton,
                 role === 'passenger' && styles.selectedRoleButton,
               ]}
-              onPress={() => setRole('passenger')}
+              onPress={() => {
+                console.log('Setting role to passenger');
+                setRole('passenger');
+              }}
             >
               <Text
                 style={[
@@ -2470,7 +2593,10 @@ const SignupScreen: React.FC = () => {
                 styles.roleButton,
                 role === 'driver' && styles.selectedRoleButton,
               ]}
-              onPress={() => setRole('driver')}
+              onPress={() => {
+                console.log('Setting role to driver');
+                setRole('driver');
+              }}
             >
               <Text
                 style={[
@@ -2484,12 +2610,17 @@ const SignupScreen: React.FC = () => {
           </View>
 
           <TouchableOpacity
-            style={styles.signupButton}
+            style={[
+              styles.signupButton,
+              (loading || rateLimited) && styles.disabledButton
+            ]}
             onPress={handleSignup}
-            disabled={loading}
+            disabled={loading || rateLimited}
           >
             {loading ? (
               <ActivityIndicator color="#fff" />
+            ) : rateLimited ? (
+              <Text style={styles.buttonText}>Try again in {timeRemaining}s</Text>
             ) : (
               <Text style={styles.buttonText}>Sign Up</Text>
             )}
@@ -2569,6 +2700,9 @@ const styles = StyleSheet.create({
     padding: 15,
     alignItems: 'center',
     marginTop: 10,
+  },
+  disabledButton: {
+    backgroundColor: '#A4C2F4', // Lighter shade for disabled state
   },
   buttonText: {
     color: '#fff',
@@ -3084,22 +3218,26 @@ export const subscribeToLocationUpdates = (userId: string, callback: (location: 
   };
 };
 
-// Get last known location for a user
 export const getLastKnownLocation = async (userId: string) => {
-  const { data, error } = await supabase
-    .from('locations')
-    .select('*')
-    .eq('user_id', userId)
-    .order('timestamp', { ascending: false })
-    .limit(1)
-    .single();
-  
-  if (error) {
-    console.error('Error getting last known location:', error);
+  try {
+    const { data, error } = await supabase
+      .from('locations')
+      .select('*')
+      .eq('user_id', userId)
+      .order('timestamp', { ascending: false })
+      .limit(1)
+      .maybeSingle(); // Changed from single() to maybeSingle()
+    
+    if (error) {
+      console.error('Error getting last known location:', error);
+      return null;
+    }
+    
+    return data as LocationType;
+  } catch (error) {
+    console.error('Unexpected error in getLastKnownLocation:', error);
     return null;
   }
-  
-  return data as LocationType;
 };
 ````
 
@@ -3670,6 +3808,95 @@ ALTER publication supabase_realtime ADD TABLE trips;
 ````
 SUPABASE_URL=your_supabase_url_here
 SUPABASE_ANON_KEY=your_supabase_anon_key_here
+# Supabase Configuration
+EXPO_PUBLIC_SUPABASE_URL=your_supabase_url_here
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key_here
+````
+
+## File: .gitignore
+````
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# testing
+coverage/
+
+# Expo
+.expo/
+web-build/
+dist/
+
+# Native
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# Supabase
+.supabase/
+
+# IDE
+.idea/
+.vscode/
 ````
 
 ## File: .repomixignore
@@ -3678,6 +3905,97 @@ SUPABASE_ANON_KEY=your_supabase_anon_key_here
 # Example:
 # *.log
 # tmp/
+````
+
+## File: app.json
+````json
+{
+  "expo": {
+    "name": "Live Location Chat",
+    "slug": "chat-live-location-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#4285F4"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "We need your location to show you on the map and share with other users.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "We need your location to show you on the map and share with other users.",
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#4285F4"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
+````
+
+## File: App.tsx
+````typescript
+import 'react-native-gesture-handler';
+import React from 'react';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
+import { LogBox } from 'react-native';
+import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
+import { AuthProvider } from './src/contexts/AuthContext';
+import { TripProvider } from './src/contexts/TripContext';
+import AppNavigator from './src/navigation/AppNavigator';
+
+// Ignore specific warnings that might be caused by external libraries
+LogBox.ignoreLogs([
+  'AsyncStorage has been extracted from react-native',
+  'Setting a timer',
+  'Non-serializable values were found in the navigation state',
+]);
+
+// Define a custom theme for React Native Paper
+const theme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    primary: '#4285F4',
+    accent: '#f1c40f',
+    background: '#ffffff',
+  },
+};
+
+export default function App() {
+  return (
+    <PaperProvider theme={theme}>
+      <SafeAreaProvider>
+        <StatusBar style="auto" />
+        <AuthProvider>
+          <TripProvider>
+            <AppNavigator />
+          </TripProvider>
+        </AuthProvider>
+      </SafeAreaProvider>
+    </PaperProvider>
+  );
+}
 ````
 
 ## File: babel.config.js
@@ -3691,6 +4009,86 @@ module.exports = function(api) {
     ],
   };
 };
+````
+
+## File: index.ts
+````typescript
+import { registerRootComponent } from 'expo';
+
+import App from './App';
+
+// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
+// It also ensures that whether you load the app in Expo Go or in a native build,
+// the environment is set up appropriately
+registerRootComponent(App);
+````
+
+## File: LICENSE
+````
+MIT License
+
+Copyright (c) 2025
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+````
+
+## File: package.json
+````json
+{
+  "name": "chat-live-location-app",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "1.23.1",
+    "@react-navigation/bottom-tabs": "^6.5.16",
+    "@react-navigation/native": "^6.1.9",
+    "@react-navigation/stack": "^6.3.20",
+    "@supabase/supabase-js": "^2.49.4",
+    "expo": "~52.0.46",
+    "expo-linking": "^7.0.5",
+    "expo-location": "~18.0.10",
+    "expo-secure-store": "^14.0.1",
+    "expo-status-bar": "~2.0.1",
+    "react": "18.3.1",
+    "react-native": "0.76.9",
+    "react-native-gesture-handler": "~2.20.2",
+    "react-native-maps": "1.18.0",
+    "react-native-paper": "^5.10.4",
+    "react-native-reanimated": "~3.16.1",
+    "react-native-safe-area-context": "4.12.0",
+    "react-native-screens": "~4.4.0",
+    "react-native-svg": "15.8.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/react": "~18.3.12",
+    "typescript": "^5.3.3"
+  },
+  "private": true,
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+}
 ````
 
 ## File: README.md
@@ -3920,192 +4318,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
   "tokenCount": {
     "encoding": "o200k_base"
   }
-}
-````
-
-## File: .gitignore
-````
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
-# dependencies
-node_modules/
-
-# Expo
-.expo/
-dist/
-web-build/
-expo-env.d.ts
-
-# Native
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-
-# Metro
-.metro-health-check*
-
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
-
-# macOS
-.DS_Store
-*.pem
-
-# local env files
-.env*.local
-
-# typescript
-*.tsbuildinfo
-````
-
-## File: app.json
-````json
-{
-  "expo": {
-    "name": "Live Location Chat",
-    "slug": "chat-live-location-app",
-    "version": "1.0.0",
-    "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
-    "newArchEnabled": true,
-    "splash": {
-      "image": "./assets/splash.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#4285F4"
-    },
-    "ios": {
-      "supportsTablet": true,
-      "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "We need your location to show you on the map and share with other users.",
-        "NSLocationAlwaysAndWhenInUseUsageDescription": "We need your location to show you on the map and share with other users.",
-        "UIBackgroundModes": [
-          "location",
-          "fetch"
-        ]
-      }
-    },
-    "android": {
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#4285F4"
-      },
-      "permissions": [
-        "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION",
-        "ACCESS_BACKGROUND_LOCATION"
-      ]
-    },
-    "web": {
-      "favicon": "./assets/favicon.png"
-    }
-  }
-}
-````
-
-## File: App.tsx
-````typescript
-import 'react-native-gesture-handler';
-import React from 'react';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
-import { LogBox } from 'react-native';
-import { Provider as PaperProvider, DefaultTheme } from 'react-native-paper';
-import { AuthProvider } from './src/contexts/AuthContext';
-import { TripProvider } from './src/contexts/TripContext';
-import AppNavigator from './src/navigation/AppNavigator';
-
-// Ignore specific warnings that might be caused by external libraries
-LogBox.ignoreLogs([
-  'AsyncStorage has been extracted from react-native',
-  'Setting a timer',
-  'Non-serializable values were found in the navigation state',
-]);
-
-// Define a custom theme for React Native Paper
-const theme = {
-  ...DefaultTheme,
-  colors: {
-    ...DefaultTheme.colors,
-    primary: '#4285F4',
-    accent: '#f1c40f',
-    background: '#ffffff',
-  },
-};
-
-export default function App() {
-  return (
-    <PaperProvider theme={theme}>
-      <SafeAreaProvider>
-        <StatusBar style="auto" />
-        <AuthProvider>
-          <TripProvider>
-            <AppNavigator />
-          </TripProvider>
-        </AuthProvider>
-      </SafeAreaProvider>
-    </PaperProvider>
-  );
-}
-````
-
-## File: index.ts
-````typescript
-import { registerRootComponent } from 'expo';
-
-import App from './App';
-
-// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
-// It also ensures that whether you load the app in Expo Go or in a native build,
-// the environment is set up appropriately
-registerRootComponent(App);
-````
-
-## File: package.json
-````json
-{
-  "name": "chat-live-location-app",
-  "version": "1.0.0",
-  "main": "index.ts",
-  "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
-  },
-  "dependencies": {
-    "@react-native-async-storage/async-storage": "1.23.1",
-    "@react-navigation/bottom-tabs": "^6.5.16",
-    "@react-navigation/native": "^6.1.9",
-    "@react-navigation/stack": "^6.3.20",
-    "@supabase/supabase-js": "^2.49.4",
-    "expo": "~52.0.46",
-    "expo-linking": "^7.0.5",
-    "expo-location": "~18.0.10",
-    "expo-secure-store": "^14.0.1",
-    "expo-status-bar": "~2.0.1",
-    "react": "18.3.1",
-    "react-native": "0.76.9",
-    "react-native-gesture-handler": "~2.20.2",
-    "react-native-maps": "1.18.0",
-    "react-native-paper": "^5.10.4",
-    "react-native-reanimated": "~3.16.1",
-    "react-native-safe-area-context": "4.12.0",
-    "react-native-screens": "~4.4.0",
-    "react-native-svg": "15.8.0"
-  },
-  "devDependencies": {
-    "@babel/core": "^7.25.2",
-    "@types/react": "~18.3.12",
-    "typescript": "^5.3.3"
-  },
-  "private": true,
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }
 ````
 
