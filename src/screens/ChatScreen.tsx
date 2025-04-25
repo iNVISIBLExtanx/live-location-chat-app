@@ -51,8 +51,18 @@ const ChatScreen: React.FC = () => {
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
+  // Add component lifecycle debugging to track when the component is mounted/unmounted
+  useEffect(() => {
+    console.log('💬 ChatScreen MOUNTED');
+    return () => {
+      console.log('💬 ChatScreen UNMOUNTED');
+    };
+  }, []);
+
   useEffect(() => {
     if (!user?.id) return;
+    
+    console.log(`🔌 Setting up chat connections for ${user?.id} with ${receiverId}`);
     
     // Check if connected with the user
     if (!isConnectedWithUser(receiverId) && !tripId) {
@@ -164,18 +174,23 @@ const ChatScreen: React.FC = () => {
     }
     
     return () => {
+      console.log('🧹 Cleaning up chat connections - THIS SHOULD ONLY HAPPEN WHEN LEAVING THE CHAT SCREEN');
+      
       // Clean up presence channel
       if (presenceRef.current && presenceRef.current.cleanup) {
+        console.log('🗑️ Cleaning up presence channel');
         presenceRef.current.cleanup();
       }
       
       // Clear typing timeout
       if (typingTimeoutRef.current) {
+        console.log('🗑️ Clearing typing timeout');
         clearTimeout(typingTimeoutRef.current);
       }
       
       // Unsubscribe from conversation updates
       if (unsubscribeRef.current) {
+        console.log('🗑️ Unsubscribing from conversation updates');
         unsubscribeRef.current();
       }
     };
@@ -218,9 +233,13 @@ const ChatScreen: React.FC = () => {
     const messageText = inputText.trim();
     setInputText('');
     
+    console.log(`📤 Trying to send message: "${messageText}"`);
+    
     try {
       // Check if we should use presence for sending
       if (presenceRef.current && presenceRef.current.sendPresenceMessage) {
+        console.log('📣 Using presence channel for message delivery');
+        
         // Create message object
         const newMessage = {
           sender_id: user.id,
@@ -231,25 +250,33 @@ const ChatScreen: React.FC = () => {
           created_at: new Date().toISOString(),
         };
         
-        // Send via presence for immediate delivery
-        await presenceRef.current.sendPresenceMessage(newMessage);
+        console.log('📦 Message object created:', newMessage);
         
-        // Update UI immediately with console logging to verify state update
-        console.log('🚀 Manually adding sent message to UI');
+        // Update UI BEFORE sending to ensure it appears immediately
+        // regardless of network conditions
+        console.log('🚀 Adding message to UI immediately');
         setMessages((prevMessages) => {
           console.log('Current message count before adding:', prevMessages.length);
           const newMessages = [newMessage, ...prevMessages];
           console.log('New message count after adding:', newMessages.length);
           return newMessages;
         });
+        
+        // Send via presence for delivery to other users
+        console.log('📡 Sending via presence channel...');
+        await presenceRef.current.sendPresenceMessage(newMessage);
+        console.log('✅ Message sent successfully via presence');
       } else {
+        console.log('⚠️ No presence channel available, using fallback method');
         // Fall back to regular sending
         const { data, error } = await sendMessage(user.id, receiverId, messageText, tripId);
         
         if (error) {
-          console.error('Error sending message:', error);
+          console.error('❌ Error sending message:', error);
+          Alert.alert('Error', 'Failed to send message. Please try again.');
         } else if (data) {
-          // Add message to the list
+          console.log('✅ Message sent successfully via direct API');
+          // Add the message to the list
           setMessages((prevMessages) => [data, ...prevMessages]);
         }
       }
@@ -259,7 +286,8 @@ const ChatScreen: React.FC = () => {
         presenceRef.current.setTyping(false);
       }
     } catch (error) {
-      console.error('Error in handleSendMessage:', error);
+      console.error('❌ Error in handleSendMessage:', error);
+      Alert.alert('Error', 'There was a problem sending your message. Please try again.');
     }
   };
 
