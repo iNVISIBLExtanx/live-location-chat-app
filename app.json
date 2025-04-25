@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "Live Location Chat",
+    "slug": "chat-live-location-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#4285F4"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "We need your location to show you on the map and share with other users.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "We need your location to show you on the map and share with other users.",
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#4285F4"
+      },
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
