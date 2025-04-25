@@ -377,7 +377,7 @@ export const setupLocationPresence = async (
 
 /**
  * Subscribe to location updates via Supabase Realtime
- * Only used for initial connection and fallback
+ * Only used for initial connection and fallbacked
  */
 export const subscribeToLocationUpdates = (userId: string, callback: (location: LocationType) => void) => {
   // First check if there's cached data
