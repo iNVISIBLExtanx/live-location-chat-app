@@ -318,9 +318,11 @@ export const setupChatPresence = (
     onNewMessage?: (message: Message) => void;
   }
 ) => {
-  // Create a unique channel name (same regardless of order)
-  const users = [userId, otherUserId].sort();
-  const channelName = `chat:${users[0]}:${users[1]}`;
+  // Create a unique channel name based on the two user IDs (sorted to be consistent)
+  // Sorting ensures both users join the same channel regardless of who created it
+  const channelName = `presence:chat:${[userId, otherUserId].sort().join('-')}`;
+  
+  console.log(`Setting up chat presence channel: ${channelName}`);
   
   // Create the presence channel
   const channel = supabase.channel(channelName, {
@@ -331,8 +333,9 @@ export const setupChatPresence = (
     },
   });
   
-  // Handle presence sync (get current state of all users)
+  // Track presence changes
   channel.on('presence', { event: 'sync' }, () => {
+    console.log('Presence sync event received');
     const state = channel.presenceState();
     
     // Check if the other user is present
@@ -356,6 +359,7 @@ export const setupChatPresence = (
   
   // Handle broadcast messages (new messages)
   channel.on('broadcast', { event: 'new_message' }, (payload) => {
+    console.log('Broadcast message received:', payload);
     if (callbacks.onNewMessage && payload.message) {
       callbacks.onNewMessage(payload.message as Message);
     }
@@ -363,6 +367,7 @@ export const setupChatPresence = (
   
   // Subscribe to the channel
   channel.subscribe(async (status) => {
+    console.log(`Chat presence channel status: ${status}`);
     if (status !== 'SUBSCRIBED') return;
     
     // Set initial presence
@@ -379,6 +384,8 @@ export const setupChatPresence = (
     },
     
     sendPresenceMessage: async (message: Message) => {
+      console.log('Sending presence message:', message);
+      
       // Add to local queue for eventual database sync
       messageQueue.push(message);
       await AsyncStorage.setItem(UNSENT_MESSAGES_KEY, JSON.stringify(messageQueue));
@@ -395,13 +402,17 @@ export const setupChatPresence = (
       cachedMessages.unshift(message);
       await cacheConversationHistory(userId, otherUserId, cachedMessages);
       
-      // Try to sync if we have enough messages
-      if (messageQueue.length >= MESSAGE_BATCH_SIZE) {
-        syncMessageQueue();
+      // Force immediate sync to database to ensure it's available via postgres_changes
+      try {
+        console.log('Forcing immediate message sync to database');
+        await syncMessageQueue(true);
+      } catch (error) {
+        console.error('Error syncing message to database:', error);
       }
     },
     
     cleanup: () => {
+      console.log('Cleaning up chat presence channel');
       supabase.removeChannel(channel);
     }
   };
@@ -416,7 +427,19 @@ export const subscribeToConversation = (
   otherUserId: string,
   callback: (message: Message) => void
 ) => {
-  // First check the message queue for unsent messages to this conversation
+  // First check if there's cached data
+  getCachedConversationHistory(currentUserId, otherUserId).then(cachedMessages => {
+    if (cachedMessages) {
+      // Sort newest first for consistency with UI
+      const sortedMessages = [...cachedMessages].sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      // Only send the most recent messages to avoid flooding the UI
+      sortedMessages.slice(0, 20).forEach(callback);
+    }
+  });
+  
+  // Check the message queue for unsent messages to this conversation
   const unsentMessages = messageQueue.filter(msg => 
     (msg.sender_id === currentUserId && msg.receiver_id === otherUserId) ||
     (msg.sender_id === otherUserId && msg.receiver_id === currentUserId)
@@ -425,9 +448,16 @@ export const subscribeToConversation = (
   // Call callback with any unsent messages
   unsentMessages.forEach(callback);
   
-  // Then subscribe to real-time database updates
+  console.log(`Setting up realtime subscription for conversation between ${currentUserId} and ${otherUserId}`);
+  
+  // Create a unique channel name that is the same regardless of which user creates it
+  // This ensures both users are listening on the same channel
+  const userIds = [currentUserId, otherUserId].sort();
+  const channelName = `conversation:${userIds[0]}-${userIds[1]}`;
+  
+  // Then subscribe to real-time updates
   const channel = supabase
-    .channel(`conversation:${currentUserId}-${otherUserId}`)
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
@@ -437,12 +467,26 @@ export const subscribeToConversation = (
         filter: `(sender_id=eq.${otherUserId} AND receiver_id=eq.${currentUserId}) OR (sender_id=eq.${currentUserId} AND receiver_id=eq.${otherUserId})`,
       },
       (payload) => {
+        console.log('Received message via postgres_changes:', payload.new);
         callback(payload.new as Message);
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      console.log(`Realtime subscription status for conversation: ${status}`);
+      
+      // If subscription fails, try to resubscribe
+      if (status === 'CHANNEL_ERROR') {
+        console.error('Channel error, will try to reconnect in 5 seconds');
+        setTimeout(() => {
+          // Remove the channel and resubscribe
+          supabase.removeChannel(channel);
+          subscribeToConversation(currentUserId, otherUserId, callback);
+        }, 5000);
+      }
+    });
 
   return () => {
+    console.log('Unsubscribing from conversation channel');
     supabase.removeChannel(channel);
   };
 };
