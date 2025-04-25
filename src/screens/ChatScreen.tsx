@@ -102,11 +102,15 @@ const ChatScreen: React.FC = () => {
           setIsOtherUserOnline(isOnline);
         },
         onNewMessage: (newMessage) => {
-          console.log('Broadcast message received via onNewMessage callback:', newMessage);
-          // Add new message to the list if it doesn't exist
-          setMessages((prevMessages) => {
-            // Check if we already have this message to avoid duplicates
-            const messageExists = prevMessages.some(msg => 
+          console.log('🚨 Broadcast message received via onNewMessage callback:', newMessage);
+          
+          // CRITICAL: Force update UI state with the new message
+          setMessages(prevMessages => {
+            // Deep copy to ensure React detects the state change
+            const updatedMessages = [...prevMessages];
+            
+            // Check if message already exists to avoid duplicates
+            const messageExists = updatedMessages.some(msg => 
               (msg.id && msg.id === newMessage.id) || 
               (msg.sender_id === newMessage.sender_id && 
                msg.created_at === newMessage.created_at && 
@@ -114,12 +118,13 @@ const ChatScreen: React.FC = () => {
             );
             
             if (messageExists) {
-              console.log('Message already exists in state, not adding again');
-              return prevMessages;
+              console.log('❌ Message already exists in state, not adding again');
+              return prevMessages; // No change needed
             }
             
-            console.log('Adding new broadcast message to UI state');
-            return [newMessage, ...prevMessages];
+            console.log('✅ Adding new broadcast message to UI state');
+            // Add message at the beginning (newest first)
+            return [newMessage, ...updatedMessages];
           });
           
           // Mark message as read if received
@@ -229,8 +234,14 @@ const ChatScreen: React.FC = () => {
         // Send via presence for immediate delivery
         await presenceRef.current.sendPresenceMessage(newMessage);
         
-        // Update UI immediately
-        setMessages((prevMessages) => [newMessage, ...prevMessages]);
+        // Update UI immediately with console logging to verify state update
+        console.log('🚀 Manually adding sent message to UI');
+        setMessages((prevMessages) => {
+          console.log('Current message count before adding:', prevMessages.length);
+          const newMessages = [newMessage, ...prevMessages];
+          console.log('New message count after adding:', newMessages.length);
+          return newMessages;
+        });
       } else {
         // Fall back to regular sending
         const { data, error } = await sendMessage(user.id, receiverId, messageText, tripId);
