@@ -9,17 +9,19 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
+import { useConnection } from '../contexts/ConnectionContext';
 import {
   sendMessage,
   getConversationHistory,
   markMessageAsRead,
-  subscribeToConversation,
+  setupChatPresence,
 } from '../services/ChatService';
 import { Message } from '../types';
-import { RouteProp, useRoute } from '@react-navigation/native';
+import { RouteProp, useRoute, useNavigation } from '@react-navigation/native';
 
 type ChatScreenParams = {
   userId: string;
@@ -31,34 +33,94 @@ type ChatScreenRouteProp = RouteProp<{ Chat: ChatScreenParams }, 'Chat'>;
 
 const ChatScreen: React.FC = () => {
   const { user } = useAuth();
+  const { isConnectedWithUser, getConnectionWithUser, requestConnectionWithUser } = useConnection();
   const route = useRoute<ChatScreenRouteProp>();
+  const navigation = useNavigation();
   const { userId: receiverId, userName: receiverName, tripId } = route.params;
   
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
+  const [isOtherUserOnline, setIsOtherUserOnline] = useState(false);
   
   const flatListRef = useRef<FlatList>(null);
+  const presenceRef = useRef<any>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!user?.id) return;
     
+    // Check if connected with the user
+    if (!isConnectedWithUser(receiverId) && !tripId) {
+      Alert.alert(
+        'Not Connected',
+        `You are not connected with ${receiverName}. Would you like to send a connection request?`,
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => navigation.goBack()
+          },
+          {
+            text: 'Connect',
+            onPress: async () => {
+              const connection = await requestConnectionWithUser(receiverId);
+              if (connection) {
+                Alert.alert(
+                  'Connection Request Sent',
+                  `${receiverName} will be notified of your request.`
+                );
+              } else {
+                Alert.alert(
+                  'Error',
+                  'Could not send connection request. Please try again later.'
+                );
+                navigation.goBack();
+              }
+            }
+          }
+        ]
+      );
+    }
+    
     // Load initial chat history
     loadChatHistory();
     
-    // Subscribe to new messages
-    const unsubscribe = subscribeToConversation(user.id, receiverId, (newMessage) => {
-      setMessages((prevMessages) => [newMessage, ...prevMessages]);
-      
-      // Mark message as read if received
-      if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id) {
-        markMessageAsRead(newMessage.id!);
-      }
-    });
+    // Set up presence channel for typing indicators and online status
+    const connection = getConnectionWithUser(receiverId);
+    
+    if (connection || tripId) {
+      presenceRef.current = setupChatPresence(user.id, receiverId, {
+        onTyping: (isTyping) => {
+          setIsOtherUserTyping(isTyping);
+        },
+        onOnlineStatus: (isOnline) => {
+          setIsOtherUserOnline(isOnline);
+        },
+        onNewMessage: (newMessage) => {
+          // Add new message to the list
+          setMessages((prevMessages) => [newMessage, ...prevMessages]);
+          
+          // Mark message as read if received
+          if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id) {
+            markMessageAsRead(newMessage.id!);
+          }
+        }
+      });
+    }
     
     return () => {
-      unsubscribe();
+      // Clean up presence channel
+      if (presenceRef.current && presenceRef.current.cleanup) {
+        presenceRef.current.cleanup();
+      }
+      
+      // Clear typing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
     };
   }, [user?.id, receiverId]);
 
@@ -100,17 +162,63 @@ const ChatScreen: React.FC = () => {
     setInputText('');
     
     try {
-      const { data, error } = await sendMessage(user.id, receiverId, messageText, tripId);
+      // Check if we should use presence for sending
+      if (presenceRef.current && presenceRef.current.sendPresenceMessage) {
+        // Create message object
+        const newMessage = {
+          sender_id: user.id,
+          receiver_id: receiverId,
+          content: messageText,
+          trip_id: tripId,
+          read: false,
+          created_at: new Date().toISOString(),
+        };
+        
+        // Send via presence for immediate delivery
+        await presenceRef.current.sendPresenceMessage(newMessage);
+        
+        // Update UI immediately
+        setMessages((prevMessages) => [newMessage, ...prevMessages]);
+      } else {
+        // Fall back to regular sending
+        const { data, error } = await sendMessage(user.id, receiverId, messageText, tripId);
+        
+        if (error) {
+          console.error('Error sending message:', error);
+        } else if (data) {
+          // Add message to the list
+          setMessages((prevMessages) => [data, ...prevMessages]);
+        }
+      }
       
-      if (error) {
-        console.error('Error sending message:', error);
-      } else if (data) {
-        // Add message to the list (this will be handled by the subscription,
-        // but we add it immediately for responsive UI)
-        setMessages((prevMessages) => [data, ...prevMessages]);
+      // Clear typing indicator
+      if (presenceRef.current && presenceRef.current.setTyping) {
+        presenceRef.current.setTyping(false);
       }
     } catch (error) {
       console.error('Error in handleSendMessage:', error);
+    }
+  };
+
+  const handleTextInputChange = (text: string) => {
+    setInputText(text);
+    
+    // Update typing indicator
+    if (presenceRef.current && presenceRef.current.setTyping) {
+      // Set typing to true
+      presenceRef.current.setTyping(true);
+      
+      // Clear previous timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      // Set a timeout to clear typing indicator after 2 seconds of inactivity
+      typingTimeoutRef.current = setTimeout(() => {
+        if (presenceRef.current && presenceRef.current.setTyping) {
+          presenceRef.current.setTyping(false);
+        }
+      }, 2000);
     }
   };
 
@@ -162,6 +270,17 @@ const ChatScreen: React.FC = () => {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
+      {/* Status bar showing online/typing status */}
+      <View style={styles.statusBar}>
+        <View style={[
+          styles.onlineIndicator,
+          isOtherUserOnline ? styles.online : styles.offline
+        ]} />
+        <Text style={styles.statusText}>
+          {isOtherUserTyping ? 'Typing...' : (isOtherUserOnline ? 'Online' : 'Offline')}
+        </Text>
+      </View>
+      
       <FlatList
         ref={flatListRef}
         data={messages}
@@ -180,7 +299,7 @@ const ChatScreen: React.FC = () => {
           style={styles.textInput}
           placeholder="Type a message..."
           value={inputText}
-          onChangeText={setInputText}
+          onChangeText={handleTextInputChange}
           multiline
           maxLength={500}
         />
@@ -208,6 +327,30 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  statusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 8,
+    backgroundColor: 'white',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E5E5',
+  },
+  onlineIndicator: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
+  },
+  online: {
+    backgroundColor: '#4CAF50',
+  },
+  offline: {
+    backgroundColor: '#9E9E9E',
+  },
+  statusText: {
+    fontSize: 12,
+    color: '#666',
   },
   messagesContainer: {
     paddingHorizontal: 16,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import * as Location from 'expo-location';
 import { LocationSubscription } from 'expo-location';
 import { useAuth } from '../contexts/AuthContext';
@@ -6,9 +6,9 @@ import {
   requestLocationPermission, 
   startLocationUpdates, 
   subscribeToLocationUpdates,
-  getLastKnownLocation
+  getLastKnownLocation,
 } from '../services/LocationService';
-import { Location as LocationType, User } from '../types';
+import { Location as LocationType } from '../types';
 
 type UserLocationsMap = Map<string, LocationType>;
 
@@ -19,44 +19,56 @@ export const useLocationTracking = (initialUserIds: string[] = []) => {
   const [isTracking, setIsTracking] = useState(false);
   const [permissionGranted, setPermissionGranted] = useState(false);
   
+  // Use refs to track current state without triggering effect dependencies
   const locationWatcherRef = useRef<LocationSubscription | null>(null);
   const userSubscriptionsRef = useRef<Map<string, () => void>>(new Map());
+  const initialUserIdsRef = useRef<string[]>(initialUserIds);
   
-  // Check permission and get initial location
+  // Update ref when props change without triggering effects
+  useEffect(() => {
+    initialUserIdsRef.current = initialUserIds;
+  }, [initialUserIds]);
+
+  // Check permission and get initial location - only once at mount
   useEffect(() => {
     const checkPermissionAndGetLocation = async () => {
       const permissionResult = await requestLocationPermission();
       setPermissionGranted(permissionResult.granted);
       
       if (permissionResult.granted && user?.id) {
-        const location = await getLastKnownLocation(user.id);
-        if (location) {
-          setMyLocation(location);
-        } else {
-          // If no prior location exists in database, get current location
-          const currentLocation = await Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.High,
-          });
-          
-          if (currentLocation) {
-            // Format the location into our app's format
-            const formattedLocation: LocationType = {
-              user_id: user.id,
-              latitude: currentLocation.coords.latitude,
-              longitude: currentLocation.coords.longitude,
-              heading: currentLocation.coords.heading || 0,
-              speed: currentLocation.coords.speed || 0,
-              timestamp: new Date(currentLocation.timestamp).toISOString(),
-            };
+        try {
+          const location = await getLastKnownLocation(user.id);
+          if (location) {
+            setMyLocation(location);
+          } else {
+            // If no prior location exists, get current location
+            const currentLocation = await Location.getCurrentPositionAsync({
+              accuracy: Location.Accuracy.High,
+            });
             
-            setMyLocation(formattedLocation);
+            if (currentLocation) {
+              // Format the location into our app's format
+              const formattedLocation: LocationType = {
+                user_id: user.id,
+                latitude: currentLocation.coords.latitude,
+                longitude: currentLocation.coords.longitude,
+                heading: currentLocation.coords.heading || 0,
+                speed: currentLocation.coords.speed || 0,
+                timestamp: new Date(currentLocation.timestamp).toISOString(),
+              };
+              
+              setMyLocation(formattedLocation);
+            }
           }
+        } catch (error) {
+          console.error('Error getting initial location:', error);
         }
       }
     };
     
     checkPermissionAndGetLocation();
-  }, [user?.id]);
+    // Only run this effect once when component mounts
+  }, []);
   
   // Start tracking when isTracking becomes true
   useEffect(() => {
@@ -71,70 +83,8 @@ export const useLocationTracking = (initialUserIds: string[] = []) => {
     };
   }, [isTracking, permissionGranted, user?.id]);
   
-  // Subscribe to location updates for other users
-  useEffect(() => {
-    if (!user?.id) return;
-    
-    // Clean up old subscriptions
-    userSubscriptionsRef.current.forEach((unsubscribe) => unsubscribe());
-    userSubscriptionsRef.current.clear();
-    
-    // Create new subscriptions
-    initialUserIds.forEach((userId) => {
-      if (userId !== user.id) {
-        subscribeToUserLocation(userId);
-      }
-    });
-    
-    return () => {
-      userSubscriptionsRef.current.forEach((unsubscribe) => unsubscribe());
-      userSubscriptionsRef.current.clear();
-    };
-  }, [initialUserIds, user?.id]);
-  
-  const startTracking = async () => {
-    if (!user?.id || locationWatcherRef.current) return;
-    
-    console.log('Starting location tracking...');
-    
-    const locationResult = await startLocationUpdates(
-      user.id,
-      undefined,
-      (location) => {
-        console.log('Location update received:', location);
-        setMyLocation(location);
-      }
-    );
-    
-    if (locationResult && 'error' in locationResult) {
-      console.error('Error starting location tracking:', locationResult.error);
-      // If permission denied, update permission state
-      if (locationResult.error.denied) {
-        setPermissionGranted(false);
-      }
-      return;
-    }
-    
-    if (locationResult) {
-      console.log('Location tracking started successfully');
-      locationWatcherRef.current = locationResult;
-      setIsTracking(true);
-    }
-  };
-  
-  const stopTracking = () => {
-    if (locationWatcherRef.current) {
-      locationWatcherRef.current.remove();
-      locationWatcherRef.current = null;
-    }
-    setIsTracking(false);
-  };
-  
-  const toggleTracking = () => {
-    setIsTracking((prev) => !prev);
-  };
-  
-  const subscribeToUserLocation = (userId: string) => {
+  // Subscribe to location updates for specified users, using stable callback
+  const subscribeToUserLocation = useCallback((userId: string) => {
     if (!user?.id || userId === user.id) return;
     
     // Unsubscribe from previous subscription if exists
@@ -153,6 +103,8 @@ export const useLocationTracking = (initialUserIds: string[] = []) => {
           return newMap;
         });
       }
+    }).catch(err => {
+      console.error('Error getting initial location for user:', userId, err);
     });
     
     // Subscribe to real-time updates
@@ -166,9 +118,10 @@ export const useLocationTracking = (initialUserIds: string[] = []) => {
     
     userSubscriptionsRef.current.set(userId, unsubscribe);
     return unsubscribe;
-  };
+  }, [user?.id]);
   
-  const unsubscribeFromUserLocation = (userId: string) => {
+  // Clean up function with stable reference
+  const unsubscribeFromUserLocation = useCallback((userId: string) => {
     if (userSubscriptionsRef.current.has(userId)) {
       const unsubscribe = userSubscriptionsRef.current.get(userId);
       if (unsubscribe) unsubscribe();
@@ -180,6 +133,81 @@ export const useLocationTracking = (initialUserIds: string[] = []) => {
         return newMap;
       });
     }
+  }, []);
+  
+  // Subscribe to location updates for users, using refs to avoid dependency cycles
+  useEffect(() => {
+    if (!user?.id) return;
+    
+    // Use a local copy so it doesn't change during the effect
+    const currentUserIds = [...initialUserIdsRef.current];
+
+    // Clean up all existing subscriptions
+    userSubscriptionsRef.current.forEach((unsubscribe) => {
+      if (unsubscribe) unsubscribe();
+    });
+    userSubscriptionsRef.current.clear();
+    
+    // Create new subscriptions for users in currentUserIds
+    currentUserIds.forEach((userId) => {
+      if (userId !== user.id) {
+        subscribeToUserLocation(userId);
+      }
+    });
+    
+    // Clean up on unmount
+    return () => {
+      userSubscriptionsRef.current.forEach((unsubscribe) => {
+        if (unsubscribe) unsubscribe();
+      });
+      userSubscriptionsRef.current.clear();
+    };
+  }, [user?.id, subscribeToUserLocation]);
+  
+  const startTracking = async () => {
+    if (!user?.id || locationWatcherRef.current) return;
+    
+    console.log('Starting location tracking...');
+    
+    try {
+      const locationResult = await startLocationUpdates(
+        user.id,
+        undefined,
+        (location) => {
+          console.log('Location update received');
+          setMyLocation(location);
+        }
+      );
+      
+      if (locationResult && 'error' in locationResult && locationResult.error) {
+        console.error('Error starting location tracking:', locationResult.error);
+        // If permission denied, update permission state
+        if (locationResult.error.denied) {
+          setPermissionGranted(false);
+        }
+        return;
+      }
+      
+      if (locationResult) {
+        console.log('Location tracking started successfully');
+        locationWatcherRef.current = locationResult;
+        setIsTracking(true);
+      }
+    } catch (error) {
+      console.error('Unexpected error starting location tracking:', error);
+    }
+  };
+  
+  const stopTracking = () => {
+    if (locationWatcherRef.current) {
+      locationWatcherRef.current.remove();
+      locationWatcherRef.current = null;
+    }
+    setIsTracking(false);
+  };
+  
+  const toggleTracking = () => {
+    setIsTracking((prev) => !prev);
   };
   
   return {

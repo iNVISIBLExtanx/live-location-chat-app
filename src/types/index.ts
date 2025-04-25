@@ -53,3 +53,12 @@ export interface Coordinates {
   latitude: number;
   longitude: number;
 }
+
+export interface Connection {
+  id?: string;
+  initiator_id: string;
+  receiver_id: string;
+  status: 'pending' | 'accepted' | 'rejected' | 'active' | 'inactive';
+  created_at: string;
+  updated_at: string;
+}

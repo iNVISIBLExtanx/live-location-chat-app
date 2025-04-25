@@ -12,45 +12,10 @@ import LoginScreen from '../screens/LoginScreen';
 import SignupScreen from '../screens/SignupScreen';
 import MapScreen from '../screens/MapScreen';
 import ChatScreen from '../screens/ChatScreen';
+import ProfileScreen from '../screens/ProfileScreen';
+import UserListScreen from '../screens/UsersListScreen';
 
-// Create a temporary profile screen until it's properly implemented
-const ProfileScreen = () => {
-  const { user, signOut } = useAuth();
-  
-  return (
-    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
-      <Text style={{ fontSize: 22, fontWeight: 'bold', marginBottom: 20 }}>
-        Profile
-      </Text>
-      {user && (
-        <>
-          <Text style={{ fontSize: 18, marginBottom: 10 }}>
-            Name: {user.full_name || 'Not set'}
-          </Text>
-          <Text style={{ fontSize: 18, marginBottom: 10 }}>
-            Email: {user.email}
-          </Text>
-          <Text style={{ fontSize: 18, marginBottom: 20 }}>
-            Role: {user.role || 'Not set'}
-          </Text>
-        </>
-      )}
-      <TouchableOpacity 
-        style={{
-          backgroundColor: '#4285F4',
-          padding: 15,
-          borderRadius: 10,
-          marginTop: 20,
-        }}
-        onPress={() => signOut()}
-      >
-        <Text style={{ color: 'white', fontWeight: 'bold' }}>Sign Out</Text>
-      </TouchableOpacity>
-    </View>
-  );
-};
-
-// Create a temporary settings screen until it's properly implemented
+// Settings Screen
 const SettingsScreen = () => {
   const [locationPermission, setLocationPermission] = React.useState('checking...');
   
@@ -117,6 +82,7 @@ export type MainStackParamList = {
 
 export type TabParamList = {
   Map: undefined;
+  Users: undefined;
   Profile: undefined;
   Settings: undefined;
 };
@@ -138,6 +104,8 @@ const AuthNavigator = () => {
 
 // Tab navigator
 const MainTabNavigator = () => {
+  const { user } = useAuth();
+  
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -146,6 +114,8 @@ const MainTabNavigator = () => {
           
           if (route.name === 'Map') {
             iconName = 'map';
+          } else if (route.name === 'Users') {
+            iconName = 'users';
           } else if (route.name === 'Profile') {
             iconName = 'user';
           } else if (route.name === 'Settings') {
@@ -160,6 +130,13 @@ const MainTabNavigator = () => {
       })}
     >
       <Tab.Screen name="Map" component={MapScreen} options={{ title: 'Live Map' }} />
+      <Tab.Screen 
+        name="Users" 
+        component={UserListScreen} 
+        options={{ 
+          title: user?.role === 'driver' ? 'Passengers' : 'Drivers' 
+        }} 
+      />
       <Tab.Screen name="Profile" component={ProfileScreen} options={{ title: 'Profile' }} />
       <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'Settings' }} />
     </Tab.Navigator>
