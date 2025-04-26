@@ -50,6 +50,8 @@ const ChatScreen: React.FC = () => {
   const presenceRef = useRef<any>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const pendingMessagesRef = useRef<Message[]>([]);
+  const [newMessageTrigger, setNewMessageTrigger] = useState<number>(0);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -116,27 +118,20 @@ const ChatScreen: React.FC = () => {
       // This is critical for ensuring messages appear instantly for both sender and receiver
       unsubscribeRef.current = subscribeToConversation(user.id, receiverId, (newMessage) => {
         console.log('Real-time message received from database subscription:', newMessage);
-        // Check if message already exists in our list to avoid duplicates
-        setMessages((prevMessages) => {
-          // Check if we already have this message
-          const messageExists = prevMessages.some(msg => 
-            msg.id === newMessage.id || 
-            (msg.sender_id === newMessage.sender_id && 
-             msg.created_at === newMessage.created_at && 
-             msg.content === newMessage.content)
-          );
-          
-          if (messageExists) {
-            return prevMessages;
-          }
-          
-          // If it's a new message, add it to the list
-          return [newMessage, ...prevMessages];
-        });
         
-        // Mark message as read if received
-        if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id) {
-          markMessageAsRead(newMessage.id!);
+        // Store the incoming message in a ref to be processed by another useEffect
+        // This separation helps ensure React state updates properly
+        if (newMessage && (newMessage.sender_id === user.id || newMessage.sender_id === receiverId)) {
+          // Add to a queue of messages to process in a dedicated useEffect
+          pendingMessagesRef.current.push(newMessage);
+          
+          // Force update to trigger the dedicated useEffect
+          setNewMessageTrigger(prev => prev + 1);
+          
+          // Mark message as read if received from the other user
+          if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id && newMessage.id) {
+            markMessageAsRead(newMessage.id);
+          }
         }
       });
     }
@@ -158,6 +153,42 @@ const ChatScreen: React.FC = () => {
       }
     };
   }, [user?.id, receiverId]);
+
+  // Dedicated useEffect to process pending messages
+  useEffect(() => {
+    if (pendingMessagesRef.current.length === 0) return;
+
+    // Process all pending messages
+    const pendingMessages = [...pendingMessagesRef.current];
+    pendingMessagesRef.current = [];
+
+    setMessages(prevMessages => {
+      // Create a new array with unique messages only
+      const messageMap = new Map();
+      
+      // First add existing messages to our map with a unique key
+      prevMessages.forEach(msg => {
+        const uniqueKey = msg.id ? 
+          `${msg.id}-${msg.sender_id}` : 
+          `${msg.sender_id}-${msg.created_at}-${msg.content}`;
+        messageMap.set(uniqueKey, msg);
+      });
+      
+      // Then add new messages, which will overwrite any duplicates
+      pendingMessages.forEach(newMessage => {
+        const uniqueKey = newMessage.id ? 
+          `${newMessage.id}-${newMessage.sender_id}` : 
+          `${newMessage.sender_id}-${newMessage.created_at}-${newMessage.content}`;
+        messageMap.set(uniqueKey, newMessage);
+      });
+      
+      // Convert map back to array and sort
+      const uniqueMessages = Array.from(messageMap.values());
+      return uniqueMessages.sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    });
+  }, [newMessageTrigger]);
 
   const loadChatHistory = async (offset = 0) => {
     if (!user?.id) return;
@@ -320,7 +351,12 @@ const ChatScreen: React.FC = () => {
         ref={flatListRef}
         data={messages}
         renderItem={renderMessageItem}
-        keyExtractor={(item) => item.id || item.created_at}
+        keyExtractor={(item, index) => {
+          // Create a truly unique key from the message properties and index as fallback
+          return item.id ? 
+            `${item.id}-${item.sender_id.substring(0, 8)}` : 
+            `${item.sender_id.substring(0, 8)}-${item.created_at}-${index}`;
+        }}
         inverted
         onEndReached={loadMoreMessages}
         onEndReachedThreshold={0.5}
