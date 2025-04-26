@@ -119,41 +119,27 @@ const ChatScreen: React.FC = () => {
       unsubscribeRef.current = subscribeToConversation(user.id, receiverId, (newMessage) => {
         console.log('Real-time message received from database subscription:', newMessage);
         
-        // Check if message already exists in our list to avoid duplicates
-        setMessages((prevMessages) => {
-          // Create a message key for checking
-          const messageKey = newMessage.id || 
-            `${newMessage.sender_id}-${newMessage.created_at}-${newMessage.content.slice(0, 10)}`;
+        // Simplified real-time update logic for better reliability
+        if (newMessage && 
+            (newMessage.sender_id === user.id || newMessage.sender_id === receiverId) && 
+            (newMessage.receiver_id === user.id || newMessage.receiver_id === receiverId)) {
           
-          // Don't add if we've processed this message already
-          if (processedIdsRef.current.has(messageKey)) {
-            return prevMessages;
+          // Force add the new message at the top of the list without complex checks
+          // This ensures the UI always updates when a new message arrives
+          setMessages(prevMessages => {
+            // Only add if not already in the list (simple ID check)
+            if (newMessage.id && prevMessages.some(m => m.id === newMessage.id)) {
+              return prevMessages;
+            }
+            
+            // Add the new message to the top of the list
+            return [newMessage, ...prevMessages];
+          });
+          
+          // Mark message as read if received
+          if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id && newMessage.id) {
+            markMessageAsRead(newMessage.id);
           }
-          
-          // Remember we've seen this message
-          processedIdsRef.current.add(messageKey);
-          
-          // Check if message exists using more robust comparison
-          const messageExists = prevMessages.some(msg => 
-            // If both have IDs, compare IDs
-            (msg.id && newMessage.id && msg.id === newMessage.id) ||
-            // Otherwise compare content and metadata
-            (msg.sender_id === newMessage.sender_id && 
-             msg.created_at === newMessage.created_at && 
-             msg.content === newMessage.content)
-          );
-          
-          if (messageExists) {
-            return prevMessages;
-          }
-          
-          // If it's a new message, add it to the list
-          return [newMessage, ...prevMessages];
-        });
-        
-        // Mark message as read if received
-        if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id) {
-          markMessageAsRead(newMessage.id!);
         }
       });
     }
