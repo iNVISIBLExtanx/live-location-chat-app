@@ -60,7 +60,7 @@ const ChatScreen: React.FC = () => {
     if (!isConnectedWithUser(receiverId) && !tripId) {
       Alert.alert(
         'Not Connected',
-        `You are not connected with ${receiverName}. Would you like to send a connection request?`,
+        `You are not connected with ${receiverName}. Would you like to send a connection?`,
         [
           {
             text: 'Cancel',
