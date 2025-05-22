@@ -45,6 +45,8 @@ const ChatScreen: React.FC = () => {
   const [refreshing, setRefreshing] = useState(false);
   const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
   const [isOtherUserOnline, setIsOtherUserOnline] = useState(false);
+  const [processedMessageIds] = useState(new Set<string>());
+  const processedIdsRef = useRef(processedMessageIds);
   
   const flatListRef = useRef<FlatList>(null);
   const presenceRef = useRef<any>(null);
@@ -58,7 +60,7 @@ const ChatScreen: React.FC = () => {
     if (!isConnectedWithUser(receiverId) && !tripId) {
       Alert.alert(
         'Not Connected',
-        `You are not connected with ${receiverName}. Would you like to send a connection request?`,
+        `You are not connected with ${receiverName}. Would you like to send a connection?`,
         [
           {
             text: 'Cancel',
@@ -116,27 +118,28 @@ const ChatScreen: React.FC = () => {
       // This is critical for ensuring messages appear instantly for both sender and receiver
       unsubscribeRef.current = subscribeToConversation(user.id, receiverId, (newMessage) => {
         console.log('Real-time message received from database subscription:', newMessage);
-        // Check if message already exists in our list to avoid duplicates
-        setMessages((prevMessages) => {
-          // Check if we already have this message
-          const messageExists = prevMessages.some(msg => 
-            msg.id === newMessage.id || 
-            (msg.sender_id === newMessage.sender_id && 
-             msg.created_at === newMessage.created_at && 
-             msg.content === newMessage.content)
-          );
-          
-          if (messageExists) {
-            return prevMessages;
-          }
-          
-          // If it's a new message, add it to the list
-          return [newMessage, ...prevMessages];
-        });
         
-        // Mark message as read if received
-        if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id) {
-          markMessageAsRead(newMessage.id!);
+        // Simplified real-time update logic for better reliability
+        if (newMessage && 
+            (newMessage.sender_id === user.id || newMessage.sender_id === receiverId) && 
+            (newMessage.receiver_id === user.id || newMessage.receiver_id === receiverId)) {
+          
+          // Force add the new message at the top of the list without complex checks
+          // This ensures the UI always updates when a new message arrives
+          setMessages(prevMessages => {
+            // Only add if not already in the list (simple ID check)
+            if (newMessage.id && prevMessages.some(m => m.id === newMessage.id)) {
+              return prevMessages;
+            }
+            
+            // Add the new message to the top of the list
+            return [newMessage, ...prevMessages];
+          });
+          
+          // Mark message as read if received
+          if (newMessage.sender_id === receiverId && newMessage.receiver_id === user.id && newMessage.id) {
+            markMessageAsRead(newMessage.id);
+          }
         }
       });
     }
@@ -159,6 +162,11 @@ const ChatScreen: React.FC = () => {
     };
   }, [user?.id, receiverId]);
 
+  // Keep our ref in sync with state
+  useEffect(() => {
+    processedIdsRef.current = processedMessageIds;
+  }, [processedMessageIds]);
+
   const loadChatHistory = async (offset = 0) => {
     if (!user?.id) return;
     
@@ -169,10 +177,29 @@ const ChatScreen: React.FC = () => {
       if (error) {
         console.error('Error loading chat history:', error);
       } else if (data) {
+        // On first load (offset=0), we'll show all messages and just mark them as processed
+        // This ensures chat history always appears on initial load
         if (offset === 0) {
+          // Track all messages as processed
+          data.forEach(msg => {
+            const messageKey = msg.id || `${msg.sender_id}-${msg.created_at}-${msg.content.slice(0, 10)}`;
+            processedIdsRef.current.add(messageKey);
+          });
+          
+          // Set all messages
           setMessages(data);
         } else {
-          setMessages((prev) => [...prev, ...data]);
+          // For pagination (offset > 0), filter out already processed messages
+          const newMessages = data.filter(msg => {
+            const messageKey = msg.id || `${msg.sender_id}-${msg.created_at}-${msg.content.slice(0, 10)}`;
+            if (processedIdsRef.current.has(messageKey)) {
+              return false;
+            }
+            processedIdsRef.current.add(messageKey);
+            return true;
+          });
+          
+          setMessages((prev) => [...prev, ...newMessages]);
         }
         
         // Mark unread messages as read
@@ -184,6 +211,8 @@ const ChatScreen: React.FC = () => {
       }
     } catch (error) {
       console.error('Error in loadChatHistory:', error);
+      console.error('Error in loadChatHistory:');
+
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -197,18 +226,25 @@ const ChatScreen: React.FC = () => {
     setInputText('');
     
     try {
+      // Create a timestamp that will be consistent
+      const timestamp = new Date().toISOString();
+      
+      // Create message object with a consistent key pattern
+      const newMessage = {
+        sender_id: user.id,
+        receiver_id: receiverId,
+        content: messageText,
+        trip_id: tripId,
+        read: false,
+        created_at: timestamp,
+      };
+      
+      // Create a predictable message key
+      const messageKey = `${newMessage.sender_id}-${newMessage.created_at}-${newMessage.content.slice(0, 10)}`;
+      processedIdsRef.current.add(messageKey);
+      
       // Check if we should use presence for sending
       if (presenceRef.current && presenceRef.current.sendPresenceMessage) {
-        // Create message object
-        const newMessage = {
-          sender_id: user.id,
-          receiver_id: receiverId,
-          content: messageText,
-          trip_id: tripId,
-          read: false,
-          created_at: new Date().toISOString(),
-        };
-        
         // Send via presence for immediate delivery
         await presenceRef.current.sendPresenceMessage(newMessage);
         
@@ -221,6 +257,11 @@ const ChatScreen: React.FC = () => {
         if (error) {
           console.error('Error sending message:', error);
         } else if (data) {
+          // If we got a database ID, record it to prevent duplication
+          if (data.id) {
+            processedIdsRef.current.add(data.id);
+          }
+          
           // Add message to the list
           setMessages((prevMessages) => [data, ...prevMessages]);
         }
@@ -320,7 +361,15 @@ const ChatScreen: React.FC = () => {
         ref={flatListRef}
         data={messages}
         renderItem={renderMessageItem}
-        keyExtractor={(item) => item.id || item.created_at}
+        keyExtractor={(item) => {
+          // Use UUID if available (from database)
+          if (item.id && item.id.includes('-')) {
+            return item.id;
+          }
+          
+          // For messages without ID, create a unique key combining sender, timestamp, and content
+          return `${item.sender_id}-${item.created_at}-${item.content.slice(0, 10)}`;
+        }}
         inverted
         onEndReached={loadMoreMessages}
         onEndReachedThreshold={0.5}
