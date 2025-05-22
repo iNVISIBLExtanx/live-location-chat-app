@@ -211,6 +211,8 @@ const ChatScreen: React.FC = () => {
       }
     } catch (error) {
       console.error('Error in loadChatHistory:', error);
+      console.error('Error in loadChatHistory:');
+
     } finally {
       setLoading(false);
       setRefreshing(false);
