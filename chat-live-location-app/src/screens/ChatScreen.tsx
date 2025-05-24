@@ -272,6 +272,8 @@ const ChatScreen: React.FC = () => {
   const renderMessageItem = ({ item }: { item: Message }) => {
 
     console.log('Rendering message item:', item); // Debug log
+    console.log('Rendering message created_at:', item.created_at); // Debug log
+
   
   if (!item.content || !item.created_at) {
     console.warn('Message missing required fields:', item);
