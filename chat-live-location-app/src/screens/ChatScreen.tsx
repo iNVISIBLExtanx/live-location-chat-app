@@ -172,6 +172,8 @@ const ChatScreen: React.FC = () => {
       
       if (error) {
         console.error('Error loading chat history:', error);
+        console.error('Error loading chat history:', error);
+
       } else if (data) {
         if (offset === 0) {
           setMessages(data);
