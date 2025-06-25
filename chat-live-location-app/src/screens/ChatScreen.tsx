@@ -237,7 +237,7 @@ const ChatScreen: React.FC = () => {
         presenceRef.current.setTyping(false);
       }
     } catch (error) {
-      console.error('Error in handleSendMessage:', error.message);
+      
     }
   };
 
