@@ -81,7 +81,6 @@ const ChatScreen: React.FC = () => {
               } else {
                 Alert.alert(
                   'Error',
-                  'Could not send connection request. Please try again later.'
                 );
                 navigation.goBack();
               }
