@@ -76,7 +76,7 @@ const ChatScreen: React.FC = () => {
               if (connection) {
                 Alert.alert(
                   'Connection Request Sent',
-                  `Receiver ${receiverName} will be notified`
+                  `Receiver ${receiverName} will be notified. please check the notification panel`
                 );
               } else {
                 Alert.alert(
