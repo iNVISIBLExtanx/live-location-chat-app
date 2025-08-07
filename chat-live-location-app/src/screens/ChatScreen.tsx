@@ -61,7 +61,7 @@ const ChatScreen: React.FC = () => {
     // Check if connected with the user
     if (!isConnectedWithUser(receiverId) && !tripId) {
       Alert.alert(
-        'Not Connected. Please connect with the user. ',
+        'Not Connected. Please connect with the user. user will contact you',
         `You are not connected with ${receiverName}. Would you like to send a connection request?`,
         [
           {
